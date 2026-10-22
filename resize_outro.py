@@ -29,8 +29,67 @@ MODE_CONCAT = 'concat'
 MODE_OVERLAY_LAST = 'overlay_last'
 MODE_REPLACE_LAST = 'replace_last'
 
+IS_MAC = platform.system() == 'Darwin'
+IS_WIN = platform.system() == 'Windows'
+
+# Bảng màu chuẩn giao diện Light/White đồng nhất như bản Windows
+BG_COLOR = '#f0f0f0'
+FG_COLOR = '#000000'
+HINT_COLOR = '#666666'
+ENTRY_BG = '#ffffff'
+BTN_START_BG = '#2e7d32'
+BTN_STOP_BG = '#c62828'
+
+FONT_FAMILY = 'Helvetica' if IS_MAC else 'Segoe UI'
+FONT_TITLE = (FONT_FAMILY, 10, 'bold')
+FONT_NORMAL = (FONT_FAMILY, 9)
+FONT_BOLD = (FONT_FAMILY, 9, 'bold')
+
+class ActionButton(tk.Label):
+    """
+    Nút bấm hành động (BẮT ĐẦU RENDER / DỪNG LẠI) dạng khối 3D bevel.
+    Khắc phục triệt để việc macOS Cocoa tự động biến các nút màu xanh/đỏ thành nút xám native.
+    """
+    def __init__(self, parent, text, command=None, bg=BTN_START_BG, fg='white',
+                 relief='raised', bd=2, padx=16, pady=7, font=FONT_TITLE, **kwargs):
+        self.command = command
+        self.normal_bg = bg
+        self.normal_fg = fg
+        self.relief_style = relief
+        self.disabled_bg = bg
+        self.disabled_fg = '#5c1313' if bg == BTN_STOP_BG else '#1a401c'
+        self._state = 'normal'
+        super().__init__(
+            parent, text=text, bg=bg, fg=fg, relief=relief, bd=bd,
+            padx=padx, pady=pady, font=font, cursor='pointinghand' if IS_MAC else 'hand2', **kwargs
+        )
+        self.bind('<ButtonPress-1>', self._on_press)
+        self.bind('<ButtonRelease-1>', self._on_release)
+
+    def _on_press(self, _e):
+        if self._state == 'normal':
+            self.config(relief='sunken')
+
+    def _on_release(self, _e):
+        if self._state == 'normal':
+            self.config(relief=self.relief_style)
+            if self.command:
+                self.command()
+
+    def config(self, **kwargs):
+        if 'state' in kwargs:
+            state = kwargs.pop('state')
+            self._state = state
+            if state == 'disabled':
+                super().config(bg=self.disabled_bg, fg=self.disabled_fg, relief=self.relief_style, cursor='arrow', **kwargs)
+                return
+            else:
+                super().config(bg=self.normal_bg, fg=self.normal_fg, relief=self.relief_style, cursor='pointinghand' if IS_MAC else 'hand2', **kwargs)
+                return
+        super().config(**kwargs)
+
 def get_app_dir():
-    """Lấy thư mục gốc chứa file thực thi (hỗ trợ cả chạy script Python và PyInstaller onefile .exe)."""
+    """Lấy thư mục gốc chứa file thực thi (hỗ trợ cả script Python, macOS .app bundle và PyInstaller onefile .exe)."""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(os.path.abspath(sys.executable))
     if '__file__' in globals():
@@ -56,96 +115,81 @@ def extract_ffmpeg_from_zip(app_dir):
 def get_ffmpeg_binaries():
     """
     Tự động tìm kiếm ffmpeg và ffprobe theo thứ tự ưu tiên:
-    1. Bundle nội bộ PyInstaller (sys._MEIPASS - nếu được nhúng bằng --add-binary)
-    2. Cạnh file thực thi (app_dir) hoặc app_dir/bin (tự giải nén từ zip nếu có)
+    1. Bundle nội bộ PyInstaller (sys._MEIPASS)
+    2. Cạnh file thực thi (app_dir), app_dir/bin, Contents/Resources, Contents/Frameworks
     3. Biến môi trường hệ thống PATH
     4. Thư mục cài đặt tiêu chuẩn trên macOS (Homebrew / MacPorts)
     """
-    is_win = platform.system() == 'Windows'
-    ffmpeg_name = 'ffmpeg.exe' if is_win else 'ffmpeg'
-    ffprobe_name = 'ffprobe.exe' if is_win else 'ffprobe'
+    ffmpeg_name = 'ffmpeg.exe' if IS_WIN else 'ffmpeg'
+    ffprobe_name = 'ffprobe.exe' if IS_WIN else 'ffprobe'
 
     ffmpeg_path = None
     ffprobe_path = None
 
-    # 1. Kiểm tra trong bundle tạm PyInstaller (_MEIPASS)
     meipass = getattr(sys, '_MEIPASS', None)
     if meipass:
         cand_ffmpeg = os.path.join(meipass, ffmpeg_name)
         cand_ffprobe = os.path.join(meipass, ffprobe_name)
-        if os.path.isfile(cand_ffmpeg):
+        if os.path.isfile(cand_ffmpeg) and (IS_WIN or os.access(cand_ffmpeg, os.X_OK)):
             ffmpeg_path = cand_ffmpeg
-        if os.path.isfile(cand_ffprobe):
+        if os.path.isfile(cand_ffprobe) and (IS_WIN or os.access(cand_ffprobe, os.X_OK)):
             ffprobe_path = cand_ffprobe
 
-    # 2. Kiểm tra trong thư mục app_dir và app_dir/bin
     app_dir = get_app_dir()
-    if is_win and (not ffmpeg_path or not ffprobe_path):
+    if IS_WIN and (not ffmpeg_path or not ffprobe_path):
         extract_ffmpeg_from_zip(app_dir)
 
-    if not ffmpeg_path:
-        for candidate in [
-            os.path.join(app_dir, ffmpeg_name),
-            os.path.join(app_dir, 'bin', ffmpeg_name)
-        ]:
-            if os.path.isfile(candidate):
-                ffmpeg_path = candidate
-                break
+    candidate_dirs = [
+        app_dir,
+        os.path.join(app_dir, 'bin'),
+        os.path.join(app_dir, '..', 'Resources'),
+        os.path.join(app_dir, '..', 'Frameworks'),
+    ]
 
-    if not ffprobe_path:
-        for candidate in [
-            os.path.join(app_dir, ffprobe_name),
-            os.path.join(app_dir, 'bin', ffprobe_name)
-        ]:
-            if os.path.isfile(candidate):
-                ffprobe_path = candidate
-                break
+    for c_dir in candidate_dirs:
+        norm_dir = os.path.normpath(c_dir)
+        cand_ffmpeg = os.path.join(norm_dir, ffmpeg_name)
+        cand_ffprobe = os.path.join(norm_dir, ffprobe_name)
+        if not ffmpeg_path and os.path.isfile(cand_ffmpeg) and (IS_WIN or os.access(cand_ffmpeg, os.X_OK)):
+            ffmpeg_path = cand_ffmpeg
+        if not ffprobe_path and os.path.isfile(cand_ffprobe) and (IS_WIN or os.access(cand_ffprobe, os.X_OK)):
+            ffprobe_path = cand_ffprobe
 
-    # 3. Kiểm tra biến môi trường PATH
     if not ffmpeg_path:
         ffmpeg_path = shutil.which('ffmpeg')
     if not ffprobe_path:
         ffprobe_path = shutil.which('ffprobe')
 
-    # 4. Các đường dẫn tiêu chuẩn trên macOS
-    if platform.system() == 'Darwin':
+    if IS_MAC:
         mac_paths = [
             ('/opt/homebrew/bin/ffmpeg', '/opt/homebrew/bin/ffprobe'),
             ('/usr/local/bin/ffmpeg', '/usr/local/bin/ffprobe'),
             ('/opt/local/bin/ffmpeg', '/opt/local/bin/ffprobe'),
         ]
         for m_ffmpeg, m_ffprobe in mac_paths:
-            if not ffmpeg_path and os.path.isfile(m_ffmpeg):
+            if not ffmpeg_path and os.path.isfile(m_ffmpeg) and os.access(m_ffmpeg, os.X_OK):
                 ffmpeg_path = m_ffmpeg
-            if not ffprobe_path and os.path.isfile(m_ffprobe):
+            if not ffprobe_path and os.path.isfile(m_ffprobe) and os.access(m_ffprobe, os.X_OK):
                 ffprobe_path = m_ffprobe
 
     return ffmpeg_path, ffprobe_path
 
 def get_cpu_fallback_args(workers=2):
-    """Tính toán cờ encoder CPU x264 với số threads tối ưu tránh tranh chấp CPU giữa các worker."""
     total_cores = os.cpu_count() or 4
     threads_per_worker = max(1, total_cores // max(1, workers))
     return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-threads', str(threads_per_worker)]
 
 def detect_best_encoder(ffmpeg_bin, workers=2):
-    """
-    Kiểm tra và tự động chọn bộ mã hóa tối ưu nhất có giới hạn timeout tránh treo:
-    - macOS: Apple VideoToolbox (h264_videotoolbox).
-    - Windows: NVIDIA NVENC -> Intel QuickSync -> AMD AMF -> CPU x264.
-    """
     if not ffmpeg_bin:
         return get_cpu_fallback_args(workers), 'CPU libx264 (Đa luồng)', 'cpu'
 
-    system = platform.system()
     candidates = []
-
-    if system == 'Darwin':
+    if IS_MAC:
         candidates = [
-            (['-c:v', 'h264_videotoolbox', '-b:v', '6000k'], 'Apple VideoToolbox (GPU)', 'videotoolbox'),
+            (['-c:v', 'h264_videotoolbox', '-b:v', '6000k'], 'Apple VideoToolbox (GPU M1-M4)', 'videotoolbox'),
             (get_cpu_fallback_args(workers), 'CPU libx264 (Đa luồng)', 'cpu')
         ]
-    elif system == 'Windows':
+    elif IS_WIN:
         candidates = [
             (['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '19'], 'NVIDIA NVENC (GPU)', 'nvenc'),
             (['-c:v', 'h264_qsv', '-preset', 'fast', '-global_quality', '21'], 'Intel QuickSync (GPU)', 'qsv'),
@@ -169,7 +213,7 @@ def detect_best_encoder(ffmpeg_bin, workers=2):
                 *enc_args,
                 '-f', 'null', '-'
             ]
-            flags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+            flags = subprocess.CREATE_NO_WINDOW if IS_WIN else 0
             res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags, timeout=2.0)
             if res.returncode == 0:
                 return enc_args, name, enc_type
@@ -190,9 +234,10 @@ def normalize_filename_key(filename):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('FFmpeg Batch Blur & Outro (High Performance Multiplatform)')
-        self.geometry('880x900')
-        self.minsize(780, 840)
+        self.title('resize + outro QuanPH')
+        self.geometry('880x720')
+        self.minsize(840, 660)
+        self.configure(bg=BG_COLOR)
 
         # Dò tìm FFmpeg & FFprobe
         self.ffmpeg_bin, self.ffprobe_bin = get_ffmpeg_binaries()
@@ -224,7 +269,7 @@ class App(tk.Tk):
         self.create_ui()
         self.toggle_outro_mode_ui()
 
-        # Khóa nút Start và nút STOP ban đầu khi chưa có tác vụ chạy
+        # Khóa nút Start và nút STOP ban đầu khi chưa kiểm tra xong
         self.btn_start.config(state='disabled')
         self.btn_stop.config(state='disabled')
         self.status_label.config(text='Đang kiểm tra cấu hình phần cứng...')
@@ -232,17 +277,12 @@ class App(tk.Tk):
         # Bắt đầu vòng lặp cập nhật UI từ Queue trên Main Thread
         self.after(50, self.process_ui_queue)
 
-        # Đọc giá trị workers trên Main Thread trước khi chuyển sang thread nền
         initial_workers = int(self.max_workers.get())
-
-        # Khởi chạy thread dò encoder an toàn (không truy cập widget Tkinter)
         threading.Thread(target=self.async_detect_encoder, args=(initial_workers,), daemon=True).start()
 
-        # Cảnh báo nếu thiếu binary
         self.check_ffmpeg_installed()
 
     def async_detect_encoder(self, workers):
-        """Dò phần cứng nền hoàn toàn không truy cập Tkinter và gửi message qua Queue."""
         try:
             args, name, enc_type = detect_best_encoder(self.ffmpeg_bin, workers)
         except Exception:
@@ -268,165 +308,250 @@ class App(tk.Tk):
             messagebox.showwarning("Cảnh báo thiếu công cụ", msg)
 
     def create_ui(self):
-        main_frame = ttk.Frame(self, padding='15 15 15 15')
+        """Khởi tạo bố cục giao diện chuẩn xác 100% như ảnh bản Windows (Image 2)."""
+        main_frame = tk.Frame(self, bg=BG_COLOR, padx=15, pady=15)
         main_frame.pack(fill='both', expand=True)
 
         row = 0
 
-        # Thông tin Hardware Acceleration
-        hw_frame = ttk.LabelFrame(main_frame, text='Hệ thống & Tăng tốc phần cứng', padding='8 6 8 6')
+        # 1. Thông tin Hardware Acceleration (Khung viền nổi bật)
+        hw_frame = tk.LabelFrame(
+            main_frame, text='Hệ thống & Tăng tốc phần cứng',
+            bg=BG_COLOR, fg=FG_COLOR, font=FONT_BOLD,
+            bd=1, relief='groove', padx=10, pady=8
+        )
         hw_frame.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(0, 10))
-        ttk.Label(hw_frame, text=f'Hệ điều hành: {platform.system()} ({platform.machine()})').pack(anchor='w')
-        self.hw_label = ttk.Label(hw_frame, text=f'Bộ mã hóa: {self.encoder_name}', font=('Segoe UI', 9, 'bold'))
-        self.hw_label.pack(anchor='w')
+
+        tk.Label(
+            hw_frame, text=f'Hệ điều hành: {platform.system()} ({platform.machine()})',
+            bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL
+        ).pack(anchor='w')
+
+        self.hw_label = tk.Label(
+            hw_frame, text=f'Bộ mã hóa: {self.encoder_name}',
+            bg=BG_COLOR, fg=FG_COLOR, font=FONT_BOLD
+        )
+        self.hw_label.pack(anchor='w', pady=(2, 0))
         row += 1
 
-        # Chọn video input
+        # 2. Chọn video input
         self.btn_pick_inputs = tk.Button(main_frame, text='Chọn video input', command=self.pick_inputs, width=22)
         self.btn_pick_inputs.grid(row=row, column=0, sticky='w', pady=4)
-        self.input_label = tk.Label(main_frame, text='Chưa chọn video nào', anchor='w')
+        self.input_label = tk.Label(main_frame, text='Chưa chọn video nào', anchor='w', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL)
         self.input_label.grid(row=row, column=1, sticky='w', padx=10, pady=4)
         row += 1
 
-        # Chọn outro
+        # 3. Chọn outro
         self.btn_pick_outro = tk.Button(main_frame, text='Chọn outro (optional)', command=self.pick_outro, width=22)
         self.btn_pick_outro.grid(row=row, column=0, sticky='w', pady=4)
-        self.outro_label = tk.Label(main_frame, text='Không có', anchor='w')
+        self.outro_label = tk.Label(main_frame, text='Không có', anchor='w', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL)
         self.outro_label.grid(row=row, column=1, sticky='w', padx=10, pady=4)
         row += 1
 
-        # Chế độ ghép outro
-        tk.Label(main_frame, text='Chế độ ghép outro:').grid(row=row, column=0, sticky='w', pady=4)
-        self.outro_mode_frame = tk.Frame(main_frame)
+        # 4. Chế độ ghép outro
+        tk.Label(main_frame, text='Chế độ ghép outro:', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL).grid(row=row, column=0, sticky='w', pady=4)
+        self.outro_mode_frame = tk.Frame(main_frame, bg=BG_COLOR)
         self.outro_mode_frame.grid(row=row, column=1, sticky='w', padx=10, pady=4)
+
         self.radio_concat = tk.Radiobutton(
             self.outro_mode_frame,
             text='Nối video + audio outro',
             variable=self.outro_mode,
             value=MODE_CONCAT,
-            command=self.toggle_outro_mode_ui
+            command=self.toggle_outro_mode_ui,
+            bg=BG_COLOR, fg=FG_COLOR, activebackground=BG_COLOR, activeforeground=FG_COLOR,
+            selectcolor=ENTRY_BG, font=FONT_NORMAL, highlightthickness=0
         )
         self.radio_concat.pack(anchor='w')
+
         self.radio_overlay = tk.Radiobutton(
             self.outro_mode_frame,
             text='Đè outro vào X giây cuối, giữ audio video gốc',
             variable=self.outro_mode,
             value=MODE_OVERLAY_LAST,
-            command=self.toggle_outro_mode_ui
+            command=self.toggle_outro_mode_ui,
+            bg=BG_COLOR, fg=FG_COLOR, activebackground=BG_COLOR, activeforeground=FG_COLOR,
+            selectcolor=ENTRY_BG, font=FONT_NORMAL, highlightthickness=0
         )
         self.radio_overlay.pack(anchor='w')
+
         self.radio_replace = tk.Radiobutton(
             self.outro_mode_frame,
             text='Thay outro cũ (cắt phần cuối rồi nối outro mới)',
             variable=self.outro_mode,
             value=MODE_REPLACE_LAST,
-            command=self.toggle_outro_mode_ui
+            command=self.toggle_outro_mode_ui,
+            bg=BG_COLOR, fg=FG_COLOR, activebackground=BG_COLOR, activeforeground=FG_COLOR,
+            selectcolor=ENTRY_BG, font=FONT_NORMAL, highlightthickness=0
         )
         self.radio_replace.pack(anchor='w')
         row += 1
 
-        # Cấu hình đè outro
-        self.overlay_duration_label = tk.Label(main_frame, text='Độ dài đè outro cuối (giây):')
+        # 5. Cấu hình đè outro
+        self.overlay_duration_label = tk.Label(main_frame, text='Độ dài đè outro cuối (giây):', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL)
         self.overlay_duration_label.grid(row=row, column=0, sticky='w', pady=2)
-        self.overlay_duration_entry = tk.Entry(main_frame, width=12, textvariable=self.overlay_duration)
+        self.overlay_duration_entry = tk.Entry(
+            main_frame, width=12, textvariable=self.overlay_duration,
+            bg=ENTRY_BG, fg=FG_COLOR, relief='solid', bd=1,
+            highlightbackground='#b0b0b0', highlightcolor='#0078d7', highlightthickness=1, font=FONT_NORMAL
+        )
         self.overlay_duration_entry.grid(row=row, column=1, sticky='w', padx=10, pady=2)
         row += 1
 
         self.overlay_duration_hint = tk.Label(
             main_frame,
             text='Ví dụ nhập 3 = đè outro lên 3 giây cuối, audio vẫn lấy từ video gốc',
-            fg='#666666'
+            bg=BG_COLOR, fg=HINT_COLOR, font=FONT_NORMAL
         )
         self.overlay_duration_hint.grid(row=row, column=1, sticky='w', padx=10, pady=(0, 4))
 
-        self.replace_duration_label = tk.Label(main_frame, text='Cắt bao nhiêu giây cuối video gốc:')
+        self.replace_duration_label = tk.Label(main_frame, text='Cắt bao nhiêu giây cuối video gốc:', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL)
         self.replace_duration_label.grid(row=row - 1, column=0, sticky='w', pady=2)
-        self.replace_duration_entry = tk.Entry(main_frame, width=12, textvariable=self.replace_duration)
+        self.replace_duration_entry = tk.Entry(
+            main_frame, width=12, textvariable=self.replace_duration,
+            bg=ENTRY_BG, fg=FG_COLOR, relief='solid', bd=1,
+            highlightbackground='#b0b0b0', highlightcolor='#0078d7', highlightthickness=1, font=FONT_NORMAL
+        )
         self.replace_duration_entry.grid(row=row - 1, column=1, sticky='w', padx=10, pady=2)
         self.replace_duration_hint = tk.Label(
             main_frame,
             text='Để trống = theo thời lượng outro mới; giá trị cắt phải ngắn hơn video gốc',
-            fg='#666666'
+            bg=BG_COLOR, fg=HINT_COLOR, font=FONT_NORMAL
         )
         self.replace_duration_hint.grid(row=row, column=1, sticky='w', padx=10, pady=(0, 4))
         row += 1
 
-        # Chọn thư mục output
+        # 6. Chọn thư mục output
         self.btn_pick_output = tk.Button(main_frame, text='Chọn thư mục output', command=self.pick_output, width=22)
         self.btn_pick_output.grid(row=row, column=0, sticky='w', pady=4)
-        self.output_label = tk.Label(main_frame, text='Chưa chọn thư mục', anchor='w')
+        self.output_label = tk.Label(main_frame, text='Chưa chọn thư mục', anchor='w', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL)
         self.output_label.grid(row=row, column=1, sticky='w', padx=10, pady=4)
         row += 1
 
-        # Tiền tố & Hậu tố
-        tk.Label(main_frame, text='Tiền tố file:').grid(row=row, column=0, sticky='w', pady=2)
-        self.prefix_entry = tk.Entry(main_frame, width=40)
+        # 7. Tiền tố & Hậu tố
+        tk.Label(main_frame, text='Tiền tố file:', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL).grid(row=row, column=0, sticky='w', pady=2)
+        self.prefix_entry = tk.Entry(
+            main_frame, width=40, bg=ENTRY_BG, fg=FG_COLOR, relief='solid', bd=1,
+            highlightbackground='#b0b0b0', highlightcolor='#0078d7', highlightthickness=1, font=FONT_NORMAL
+        )
         self.prefix_entry.grid(row=row, column=1, sticky='w', padx=10, pady=2)
         row += 1
 
-        tk.Label(main_frame, text='Hậu tố file:').grid(row=row, column=0, sticky='w', pady=2)
-        self.suffix_entry = tk.Entry(main_frame, width=40)
+        tk.Label(main_frame, text='Hậu tố file:', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL).grid(row=row, column=0, sticky='w', pady=2)
+        self.suffix_entry = tk.Entry(
+            main_frame, width=40, bg=ENTRY_BG, fg=FG_COLOR, relief='solid', bd=1,
+            highlightbackground='#b0b0b0', highlightcolor='#0078d7', highlightthickness=1, font=FONT_NORMAL
+        )
         self.suffix_entry.grid(row=row, column=1, sticky='w', padx=10, pady=2)
         row += 1
 
-        # Slider Độ blur
-        tk.Label(main_frame, text='Độ blur nền (%) [Fast Blur]:').grid(row=row, column=0, sticky='w', pady=4)
-        blur_container = tk.Frame(main_frame)
+        # 8. Slider Độ blur
+        tk.Label(main_frame, text='Độ blur nền (%) [Fast Blur]:', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL).grid(row=row, column=0, sticky='w', pady=4)
+        blur_container = tk.Frame(main_frame, bg=BG_COLOR)
         blur_container.grid(row=row, column=1, sticky='w', padx=10, pady=4)
+
+        blur_subframe = tk.Frame(blur_container, bg=BG_COLOR)
+        blur_subframe.pack(side='left')
+
+        self.blur_scale_val = tk.Label(blur_subframe, text='80', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL)
+        self.blur_scale_val.pack()
+
         self.blur_scale = tk.Scale(
-            blur_container,
+            blur_subframe,
             from_=0,
             to=200,
             orient='horizontal',
             length=300,
-            variable=self.blur_percent
+            variable=self.blur_percent,
+            bg=BG_COLOR, fg=FG_COLOR,
+            troughcolor='#d9d9d9',
+            highlightthickness=0,
+            bd=1,
+            showvalue=False,
+            command=self._on_blur_slide
         )
-        self.blur_scale.pack(side='left')
-        tk.Label(blur_container, text='(0% = tắt blur, 80% = tiêu chuẩn, tối ưu tốc độ x5-x15)', fg='#666666').pack(side='left', padx=8)
+        self.blur_scale.pack()
+
+        tk.Label(
+            blur_container,
+            text='(0% = tắt blur, 80% = tiêu chuẩn, tối ưu tốc độ x5-x15)',
+            bg=BG_COLOR, fg=HINT_COLOR, font=FONT_NORMAL
+        ).pack(side='left', padx=8)
         row += 1
 
-        # Số luồng chạy song song
-        tk.Label(main_frame, text='Số luồng song song (Workers):').grid(row=row, column=0, sticky='w', pady=4)
-        workers_frame = tk.Frame(main_frame)
+        # 9. Số luồng chạy song song
+        tk.Label(main_frame, text='Số luồng song song (Workers):', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL).grid(row=row, column=0, sticky='w', pady=4)
+        workers_frame = tk.Frame(main_frame, bg=BG_COLOR)
         workers_frame.grid(row=row, column=1, sticky='w', padx=10, pady=4)
-        self.workers_spinbox = tk.Spinbox(workers_frame, from_=1, to=16, width=5, textvariable=self.max_workers)
+
+        self.workers_spinbox = tk.Spinbox(
+            workers_frame, from_=1, to=16, width=5, textvariable=self.max_workers,
+            bg=ENTRY_BG, fg=FG_COLOR, relief='solid', bd=1,
+            highlightbackground='#b0b0b0', highlightcolor='#0078d7', highlightthickness=1, font=FONT_NORMAL
+        )
         self.workers_spinbox.pack(side='left')
-        self.workers_hint = tk.Label(workers_frame, text='Gợi ý: đang tính...', fg='#666666', wraplength=390, justify='left')
+
+        self.workers_hint = tk.Label(
+            workers_frame, text='Gợi ý: đang tính...',
+            bg=BG_COLOR, fg=HINT_COLOR, wraplength=390, justify='left', font=FONT_NORMAL
+        )
         self.workers_hint.pack(side='left', padx=8)
+
         self.btn_apply_workers = tk.Button(workers_frame, text='Dùng gợi ý', command=self.apply_worker_recommendation)
         self.btn_apply_workers.pack(side='left', padx=4)
         row += 1
 
-        # Danh sách kích thước (size)
-        tk.Label(main_frame, text='Danh sách kích thước (mỗi dòng 1 size WxH chẵn):').grid(row=row, column=0, columnspan=2, sticky='w', pady=(8, 2))
+        # 10. Danh sách kích thước (size)
+        tk.Label(
+            main_frame, text='Danh sách kích thước (mỗi dòng 1 size WxH chẵn):',
+            bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL
+        ).grid(row=row, column=0, columnspan=2, sticky='w', pady=(8, 2))
         row += 1
 
-        self.size_text = tk.Text(main_frame, height=6, width=35)
+        self.size_text = tk.Text(
+            main_frame, height=6, width=35,
+            bg=ENTRY_BG, fg=FG_COLOR, insertbackground=FG_COLOR,
+            relief='solid', bd=1,
+            highlightbackground='#b0b0b0', highlightcolor='#0078d7', highlightthickness=1,
+            font=FONT_NORMAL
+        )
         self.size_text.grid(row=row, column=0, columnspan=2, sticky='w', pady=2)
         self.size_text.insert('1.0', '\n'.join(DEFAULT_SIZES))
         row += 1
 
-        # Progress bar
+        # 11. Progress bar
         self.progress = ttk.Progressbar(main_frame, length=640)
         self.progress.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(12, 4))
         row += 1
 
-        # Status label
-        self.status_label = tk.Label(main_frame, text='Sẵn sàng', font=('Segoe UI', 9))
+        # 12. Status label
+        self.status_label = tk.Label(main_frame, text='Sẵn sàng', bg=BG_COLOR, fg=FG_COLOR, font=FONT_NORMAL)
         self.status_label.grid(row=row, column=0, columnspan=2, sticky='w', pady=2)
         row += 1
 
-        # Nút Bắt đầu / Dừng
-        btn_frame = tk.Frame(main_frame)
+        # 13. Nút Bắt đầu (Xanh lá) & Dừng (Đỏ) chuẩn màu Windows
+        btn_frame = tk.Frame(main_frame, bg=BG_COLOR)
         btn_frame.grid(row=row, column=0, columnspan=2, pady=12)
-        self.btn_start = tk.Button(btn_frame, text='BẮT ĐẦU RENDER', command=self.start, bg='#2e7d32', fg='white', font=('Segoe UI', 10, 'bold'), padx=15, pady=6)
+
+        self.btn_start = ActionButton(
+            btn_frame, text='BẮT ĐẦU RENDER', command=self.start,
+            bg=BTN_START_BG, fg='white', font=FONT_TITLE, padx=16, pady=7
+        )
         self.btn_start.pack(side='left', padx=10)
-        self.btn_stop = tk.Button(btn_frame, text='DỪNG LẠI (STOP)', command=self.stop, bg='#c62828', fg='white', font=('Segoe UI', 10, 'bold'), padx=15, pady=6)
+
+        self.btn_stop = ActionButton(
+            btn_frame, text='DỪNG LẠI (STOP)', command=self.stop,
+            bg=BTN_STOP_BG, fg='white', font=FONT_TITLE, padx=16, pady=7
+        )
         self.btn_stop.pack(side='left', padx=10)
 
         self.size_text.bind('<KeyRelease>', self.update_worker_recommendation)
         self.blur_scale.config(command=self.update_worker_recommendation)
         self.after_idle(self.update_worker_recommendation)
+
+    def _on_blur_slide(self, val):
+        self.blur_scale_val.config(text=str(int(float(val))))
+        self.update_worker_recommendation()
 
     def set_inputs_enabled(self, enabled=True):
         """Khóa hoặc mở lại toàn bộ các nút điều khiển cấu hình trên giao diện khi đang render."""
@@ -438,6 +563,8 @@ class App(tk.Tk):
         self.btn_pick_inputs.config(state=config_state)
         self.btn_pick_outro.config(state=config_state)
         self.btn_pick_output.config(state=config_state)
+        self.btn_apply_workers.config(state=config_state)
+
         self.prefix_entry.config(state=config_state)
         self.suffix_entry.config(state=config_state)
         self.workers_spinbox.config(state=config_state)
@@ -448,7 +575,6 @@ class App(tk.Tk):
         self.radio_overlay.config(state=config_state)
         self.radio_replace.config(state=config_state)
         self.blur_scale.config(state=config_state)
-        self.btn_apply_workers.config(state=config_state)
 
     def toggle_outro_mode_ui(self):
         is_overlay = (self.outro_mode.get() == MODE_OVERLAY_LAST)
@@ -485,7 +611,6 @@ class App(tk.Tk):
         cores_per_worker = 6 if is_hardware_encoder else 4
         capacity = min(4, max(1, math.ceil(cpu_count / cores_per_worker)))
 
-        # Giảm số worker ở độ phân giải cao để tránh tranh chấp bộ nhớ và băng thông.
         if max_pixels >= 3840 * 2160:
             capacity = min(capacity, 2)
         elif max_pixels >= 2560 * 1440:
@@ -552,14 +677,13 @@ class App(tk.Tk):
 
     def validate_before_start(self):
         """Xác thực toàn bộ dữ liệu nhập trên Main Thread trước khi khởi chạy."""
-        # 1. Kiểm tra bắt buộc cả ffmpeg và ffprobe
         if not self.ffmpeg_bin or not self.ffprobe_bin:
             missing = []
             if not self.ffmpeg_bin:
                 missing.append("FFmpeg")
             if not self.ffprobe_bin:
                 missing.append("FFprobe")
-            messagebox.showerror('Lỗi thiếu công cụ', f"Không tìm thấy {' và '.join(missing)}! Bắt buộc phải có cả hai để xử lý video và âm thanh.")
+            messagebox.showerror('Lỗi thiếu công cụ', f"Không tìm thấy {' và '.join(missing)}! Bắt buộc phải có cả hai để xử lý video.")
             return False
 
         if not self.inputs:
@@ -594,7 +718,6 @@ class App(tk.Tk):
                 messagebox.showerror('Lỗi', 'Thời lượng cắt outro cũ phải là số hợp lệ hoặc để trống để tự động!')
                 return False
 
-        # 2. Xác thực Workers
         try:
             workers = int(self.max_workers.get())
             if workers < 1 or workers > 16:
@@ -604,7 +727,6 @@ class App(tk.Tk):
             messagebox.showerror('Lỗi', 'Số luồng song song (Workers) không hợp lệ!')
             return False
 
-        # 3. Xác thực danh sách kích thước (Size WxH) và kiểm tra tính chẵn (divisible by 2)
         raw_lines = [s.strip() for s in self.size_text.get('1.0', 'end').splitlines() if s.strip()]
         if not raw_lines:
             messagebox.showerror('Lỗi', 'Danh sách kích thước (size) không được để trống!')
@@ -651,7 +773,6 @@ class App(tk.Tk):
 
         workers = int(self.max_workers.get())
 
-        # Chụp ảnh tĩnh (snapshot) cấu hình encoder cho riêng đợt render này
         if self.encoder_type == 'cpu':
             batch_encoder_args = get_cpu_fallback_args(workers)
             batch_encoder_type = 'cpu'
@@ -707,7 +828,6 @@ class App(tk.Tk):
                     self.encoder_type = enc_type
                     self.hw_label.config(text=f'Bộ mã hóa: {self.encoder_name}')
                     self.update_worker_recommendation()
-                    # Đưa trạng thái về sẵn sàng, bỏ cờ stop_flag và bật nút Start
                     self.stop_flag = False
                     self.btn_start.config(state='normal')
                     self.btn_stop.config(state='disabled')
@@ -731,7 +851,6 @@ class App(tk.Tk):
                         messagebox.showinfo('Hoàn tất', f'Đã render thành công toàn bộ {success_cnt}/{total} video!')
                     else:
                         self.status_label.config(text=f'HOÀN TẤT CÓ LỖI: {success_cnt} thành công, {fail_cnt} thất bại.')
-                        # Lưu log lỗi vào đúng thư mục output của đợt chạy đó
                         log_path = os.path.join(batch_output_dir or '.', 'render_errors.log')
                         log_saved = False
                         try:
@@ -771,7 +890,7 @@ class App(tk.Tk):
 
     def run_tracked_subprocess(self, cmd, timeout=5.0):
         """Khởi chạy tiến trình con có theo dõi trong active_processes để lệnh STOP hủy được ngay."""
-        flags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+        flags = subprocess.CREATE_NO_WINDOW if IS_WIN else 0
         with self.proc_lock:
             if self.stop_flag:
                 raise RuntimeError('Tác vụ đã bị dừng bởi người dùng')
@@ -833,7 +952,6 @@ class App(tk.Tk):
                     return None
                 return seconds if math.isfinite(seconds) and seconds > 0 else None
 
-            # 1. Đọc duration của stream nếu container cung cấp trực tiếp.
             streams = data.get('streams', [])
             if streams:
                 s = streams[0]
@@ -841,7 +959,6 @@ class App(tk.Tk):
                 if duration is not None:
                     return duration
 
-                # Một số container có duration_ts/time_base dù duration bị N/A.
                 duration_ts = positive_seconds(s.get('duration_ts'))
                 time_base = s.get('time_base') or ''
                 if duration_ts is not None and '/' in time_base:
@@ -855,7 +972,6 @@ class App(tk.Tk):
                     except (TypeError, ValueError, ZeroDivisionError):
                         pass
 
-                # 2. Đọc tags (DURATION)
                 tags = s.get('tags', {})
                 for k, v in tags.items():
                     if 'duration' in k.lower() and v and v != 'N/A':
@@ -872,7 +988,6 @@ class App(tk.Tk):
                         except Exception:
                             pass
 
-                # 3. Ước lượng dự phòng; metadata này không đảm bảo chính xác tuyệt đối với mọi VFR.
                 nb_frames = s.get('nb_frames')
                 avg_fps = s.get('avg_frame_rate')
                 if nb_frames and nb_frames != 'N/A' and avg_fps and avg_fps != 'N/A' and '/' in avg_fps:
@@ -887,7 +1002,6 @@ class App(tk.Tk):
                     except (TypeError, ValueError, ZeroDivisionError):
                         pass
 
-            # 4. Mức dự phòng cuối là duration của container, có thể dài theo audio.
             fmt = data.get('format', {})
             duration = positive_seconds(fmt.get('duration'))
             if duration is not None:
@@ -953,7 +1067,7 @@ class App(tk.Tk):
 
     def execute_ffmpeg(self, cmd):
         """Thực thi lệnh FFmpeg có bảo vệ tiến trình (Atomic lock) và bắt lỗi stderr."""
-        flags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+        flags = subprocess.CREATE_NO_WINDOW if IS_WIN else 0
         with self.proc_lock:
             if self.stop_flag:
                 return False, 'Tác vụ đã bị dừng bởi người dùng'
@@ -994,7 +1108,6 @@ class App(tk.Tk):
         is_overlay = bool(outro_path and outro_mode == MODE_OVERLAY_LAST)
         has_out_audio = self.has_audio_stream(outro_path) if (is_concat or is_replace) else False
 
-        # Chỉ probe duration khi logic render thực sự cần đồng bộ hoặc cắt audio.
         needs_input_duration = (
             has_in_audio
             or is_replace
@@ -1037,7 +1150,6 @@ class App(tk.Tk):
         vmap = '[v_base]'
         amap = None
 
-        # Chuẩn bị outro thành cùng canvas với video gốc: nền mờ và chủ thể giữ nguyên tỷ lệ.
         if outro_path:
             filter_parts.extend([
                 "[1:v]split=2[outro_bg_src][outro_fg_src]",
@@ -1046,7 +1158,6 @@ class App(tk.Tk):
                 "[outro_bg][outro_fg]overlay=(W-w)/2:(H-h)/2,setsar=1[outro_canvas]"
             ])
 
-        # Cắt audio video gốc theo phần hình còn được giữ lại.
         if has_in_audio:
             filter_parts.append(f"[0:a]aresample=48000,asetpts=N/SR/TB,atrim=duration={input_audio_duration}[a0]")
             amap = '[a0]'
@@ -1054,7 +1165,6 @@ class App(tk.Tk):
         if is_concat or is_replace:
             input_args.extend(['-i', outro_path])
 
-            # Chuẩn hóa PTS cho cả 2 nhánh video trước khi concat để tránh giật hình/mất đồng bộ
             if is_replace:
                 filter_parts.append(
                     f"[v_base]trim=duration={kept_input_duration},setpts=PTS-STARTPTS[v0]"
@@ -1063,7 +1173,6 @@ class App(tk.Tk):
                 filter_parts.append("[v_base]setpts=PTS-STARTPTS[v0]")
             filter_parts.append("[outro_canvas]setpts=PTS-STARTPTS[v1]")
 
-            # Xử lý âm thanh ghép nối (cắt audio outro chuẩn xác theo thời lượng hình ảnh outro)
             if has_in_audio and has_out_audio:
                 filter_parts.append(f"[1:a]aresample=48000,asetpts=N/SR/TB,atrim=duration={outro_duration}[a1]")
                 filter_parts.append("[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]")
@@ -1125,17 +1234,14 @@ class App(tk.Tk):
         success = False
         err = ''
         try:
-            # Thử 1: Dùng encoder được snapshot riêng cho batch này
             cmd_primary = make_cmd(config['encoder_args'])
             success, err = self.execute_ffmpeg(cmd_primary)
 
-            # Fallback về CPU libx264 nếu hardware encoder lỗi khi chạy file thực tế
             cpu_args = get_cpu_fallback_args(config['workers'])
             if not success and not self.stop_flag and config['encoder_type'] != 'cpu':
                 cmd_fallback = make_cmd(cpu_args)
                 success, err = self.execute_ffmpeg(cmd_fallback)
 
-            # Kiểm tra nghiêm ngặt kết quả đầu ra trước khi hoán đổi nguyên tử
             if success and not self.stop_flag:
                 if not os.path.isfile(temp_output_path) or os.path.getsize(temp_output_path) == 0:
                     success = False
@@ -1148,7 +1254,6 @@ class App(tk.Tk):
                         err = f'Lỗi hoán đổi file kết quả (os.replace): {replace_err}'
 
         finally:
-            # Xóa file tạm nếu còn sót lại (không bao giờ xóa file đích cũ nếu có lỗi)
             if os.path.isfile(temp_output_path):
                 try:
                     os.remove(temp_output_path)
@@ -1172,7 +1277,6 @@ class App(tk.Tk):
                     parts = [p for p in [pfx, base, size_str, sfx] if p]
                     cand_name = f"{'_'.join(parts)}.mp4"
 
-                    # Chống đụng tên file có tính đến hệ thống tệp không phân biệt hoa thường (Windows/macOS)
                     norm_key = normalize_filename_key(cand_name)
                     if norm_key in used_output_norm_keys:
                         idx = 2
