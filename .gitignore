@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Build artifacts
+build/
+dist/
+*.manifest
+*.spec
+
+# Binaries & Archives (>100MB or platform specific)
+*.exe
+*.zip
+*.tar.gz
+ffmpeg.exe
+ffprobe.exe
+
+# Log files
+*.log
+render_errors.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
