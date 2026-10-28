@@ -130,10 +130,22 @@ def get_ffmpeg_binaries():
     if meipass:
         cand_ffmpeg = os.path.join(meipass, ffmpeg_name)
         cand_ffprobe = os.path.join(meipass, ffprobe_name)
-        if os.path.isfile(cand_ffmpeg) and (IS_WIN or os.access(cand_ffmpeg, os.X_OK)):
-            ffmpeg_path = cand_ffmpeg
-        if os.path.isfile(cand_ffprobe) and (IS_WIN or os.access(cand_ffprobe, os.X_OK)):
-            ffprobe_path = cand_ffprobe
+        if os.path.isfile(cand_ffmpeg):
+            if not IS_WIN:
+                try:
+                    os.chmod(cand_ffmpeg, 0o755)
+                except Exception:
+                    pass
+            if IS_WIN or os.access(cand_ffmpeg, os.X_OK):
+                ffmpeg_path = cand_ffmpeg
+        if os.path.isfile(cand_ffprobe):
+            if not IS_WIN:
+                try:
+                    os.chmod(cand_ffprobe, 0o755)
+                except Exception:
+                    pass
+            if IS_WIN or os.access(cand_ffprobe, os.X_OK):
+                ffprobe_path = cand_ffprobe
 
     app_dir = get_app_dir()
     if IS_WIN and (not ffmpeg_path or not ffprobe_path):
@@ -1058,6 +1070,8 @@ class App(tk.Tk):
         h_low = max(32, (int(h) // scale_div // 2) * 2)
 
         radius = max(2, min(40, int((p / 100.0) * 10)))
+        max_allowed_radius = max(1, (min(w_low, h_low) // 2) - 1)
+        radius = min(radius, max_allowed_radius)
         power = 2
 
         blur_op = f"boxblur={radius}:{power}"
@@ -1169,7 +1183,7 @@ class App(tk.Tk):
             ])
 
         if has_in_audio:
-            filter_parts.append(f"[0:a]aresample=48000,asetpts=N/SR/TB,atrim=duration={input_audio_duration}[a0]")
+            filter_parts.append(f"[0:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB,atrim=duration={input_audio_duration}[a0]")
             amap = '[a0]'
 
         if is_concat or is_replace:
@@ -1184,7 +1198,7 @@ class App(tk.Tk):
             filter_parts.append("[outro_canvas]setpts=PTS-STARTPTS[v1]")
 
             if has_in_audio and has_out_audio:
-                filter_parts.append(f"[1:a]aresample=48000,asetpts=N/SR/TB,atrim=duration={outro_duration}[a1]")
+                filter_parts.append(f"[1:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB,atrim=duration={outro_duration}[a1]")
                 filter_parts.append("[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]")
                 vmap = '[vout]'
                 amap = '[aout]'
@@ -1195,7 +1209,7 @@ class App(tk.Tk):
                 amap = '[aout]'
             elif not has_in_audio and has_out_audio:
                 filter_parts.append(f"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration={input_audio_duration}[a0]")
-                filter_parts.append(f"[1:a]aresample=48000,asetpts=N/SR/TB,atrim=duration={outro_duration}[a1]")
+                filter_parts.append(f"[1:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB,atrim=duration={outro_duration}[a1]")
                 filter_parts.append("[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]")
                 vmap = '[vout]'
                 amap = '[aout]'
@@ -1238,6 +1252,7 @@ class App(tk.Tk):
                 '-map', vmap,
                 *audio_args,
                 *enc_args,
+                '-pix_fmt', 'yuv420p',
                 temp_output_path
             ]
 
@@ -1257,11 +1272,22 @@ class App(tk.Tk):
                     success = False
                     err = 'Lỗi render: FFmpeg báo hoàn tất nhưng file tạm không tồn tại hoặc có kích thước 0 byte.'
                 else:
-                    try:
-                        os.replace(temp_output_path, output_path)
-                    except Exception as replace_err:
-                        success = False
-                        err = f'Lỗi hoán đổi file kết quả (os.replace): {replace_err}'
+                    replaced = False
+                    for attempt in range(5):
+                        try:
+                            os.replace(temp_output_path, output_path)
+                            replaced = True
+                            break
+                        except PermissionError as p_err:
+                            if attempt < 4:
+                                time.sleep(0.15)
+                            else:
+                                success = False
+                                err = f'Lỗi hoán đổi file kết quả (bị khóa bởi tiến trình khác): {p_err}'
+                        except Exception as replace_err:
+                            success = False
+                            err = f'Lỗi hoán đổi file kết quả (os.replace): {replace_err}'
+                            break
 
         finally:
             if os.path.isfile(temp_output_path):
@@ -1275,6 +1301,10 @@ class App(tk.Tk):
     def render_all_thread(self, config):
         """Luồng nền xử lý danh sách render và gửi kết quả về Main Thread qua Queue."""
         try:
+            out_dir = config.get('output_dir', '')
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+
             tasks = []
             used_output_norm_keys = set()
 
@@ -1282,8 +1312,8 @@ class App(tk.Tk):
                 base = os.path.splitext(os.path.basename(input_video))[0]
                 for w, h in config['sizes']:
                     size_str = f"{w}x{h}"
-                    pfx = config['prefix']
-                    sfx = config['suffix']
+                    pfx = re.sub(r'[<>:"/\\|?*]', '_', config.get('prefix', ''))
+                    sfx = re.sub(r'[<>:"/\\|?*]', '_', config.get('suffix', ''))
                     parts = [p for p in [pfx, base, size_str, sfx] if p]
                     cand_name = f"{'_'.join(parts)}.mp4"
 
