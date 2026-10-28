@@ -899,6 +899,8 @@ class App(tk.Tk):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 creationflags=flags
             )
             self.active_processes.add(proc)
@@ -1072,7 +1074,15 @@ class App(tk.Tk):
             if self.stop_flag:
                 return False, 'Tác vụ đã bị dừng bởi người dùng'
             try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, creationflags=flags)
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    creationflags=flags
+                )
                 self.active_processes.add(proc)
             except Exception as e:
                 return False, f'Lỗi khởi chạy tiến trình FFmpeg: {e}'
